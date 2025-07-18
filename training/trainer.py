@@ -139,20 +139,25 @@ class BaseTrainer(ABC):
         self._run_callbacks('on_validation_start')
 
         val_metrics = {}
-        with torch.no_grad():
-            total_loss = 0
-            val_len = len(self.val_loader)
-            for batch in self.val_loader:
-                self._run_callbacks('on_validation_batch_start', batch=batch)
+        total_loss = 0
+        val_len = len(self.val_loader)
+        for batch_idx, batch in enumerate(self.val_loader):
+            self._run_callbacks('on_validation_batch_start', batch=batch)
 
-                outputs = self._forward_pass(batch)
-                val_metrics = self._update_metrics(val_metrics, outputs)
+            outputs = self._forward_pass(batch)
+            val_metrics = self._update_metrics(val_metrics, outputs)
 
-                total_loss += outputs['loss'].item()
-                self._run_callbacks('on_validation_batch_end', batch=batch, outputs=outputs)
-            avg_loss = total_loss / val_len
-            self.metrics.update({'val_loss': total_loss})
-            self._run_callbacks('on_validation_end', loss=avg_loss)
+            total_loss += outputs['loss'].item()
+            self._run_callbacks(
+                'on_validation_batch_end',
+                        batch=batch,
+                        outputs=outputs,
+                        batch_idx=batch_idx,
+                        loss=outputs['loss'],
+            )
+        avg_loss = total_loss / val_len
+        self.metrics.update({'val_loss': total_loss})
+        self._run_callbacks('on_validation_end', loss=avg_loss)
 
     def _forward_pass(self, batch) -> Dict:
         inputs, targets = batch

@@ -3,6 +3,7 @@ import torch
 import time
 from typing import List
 
+
 """
 Проверить на корректность и совместимость с BaseTrainer
 Написать логику для hook'ов DecoderOnlyMACTitan
@@ -110,8 +111,8 @@ class ModelCheckpoint(Callback):
         self.best_value = float('inf')
 
     def on_epoch_end(self, trainer, **kwargs):
-        current = trainer.metrics[self.monitor]
         torch.save(trainer.model.state_dict(), self.filepath)
+        current = trainer.metrics.get(self.monitor)
         if current < self.best_value:
             self.best_value = current
             torch.save(trainer.model.state_dict(), f"{self.filepath.replace('.pt', '')}_best.pt")
@@ -162,6 +163,11 @@ class MetricLogger(Callback):
 
         trainer.log('batch_loss', loss.item())
         # print(f"loss: {loss.item():.4f}")
+    def on_validation_batch_end(self, trainer, **kwargs):
+
+        loss = kwargs.get('loss')
+
+        trainer.log('val_batch_loss', loss.item())
 
     def on_epoch_end(self, trainer, **kwargs):
         avg_loss = torch.mean(torch.tensor(trainer._log_buffer['batch_loss']))
@@ -169,11 +175,18 @@ class MetricLogger(Callback):
         # print(f"loss: {avg_loss:.4f}")
         trainer._log_buffer['batch_loss'] = []
 
+    def on_validation_end(self, trainer, **kwargs):
+        avg_loss = torch.mean(torch.tensor(trainer._log_buffer['val_batch_loss']))
+        trainer.log('val_loss', avg_loss, phase='val')
+        # print(f"loss: {avg_loss:.4f}")
+        trainer._log_buffer['val_batch_loss'] = []
+
 
 class LogPrinter(Callback):
     def __init__(self, log_interval: int = 10):
         super().__init__()
         self.log_interval = log_interval
+        self.global_start_time = None
         self.last_time = None
         self.start_time = None
         self.num_epochs = None
@@ -181,12 +194,13 @@ class LogPrinter(Callback):
 
     def on_train_start(self, trainer, **kwargs):
         num_epochs = kwargs.get('num_epochs')
-        self.start_time = time.time()
+        self.global_start_time = time.time()
         self.num_epochs = num_epochs
 
     def on_epoch_start(self, trainer, **kwargs):
         epoch = kwargs.get('epoch')
         self.current_epoch = epoch
+        self.start_time = time.time()
 
     def on_batch_start(self, trainer, **kwargs):
         if self.last_time is None:
@@ -198,12 +212,44 @@ class LogPrinter(Callback):
 
         if (batch_idx + 1) % self.log_interval == 0:
             print(f"Epoch: {self.current_epoch}/{self.num_epochs},\n"
-                  f" Global Step: {global_step}/{len(trainer.train_loader) * self.num_epochs},\n"
+                  f" Global Step: {global_step + 1}/{len(trainer.train_loader) * self.num_epochs},\n"
                   f" Batch: {batch_idx + 1}/{len(trainer.train_loader)},\n"
-                  f"Loss: {torch.Tensor(trainer._log_buffer['batch_loss']).mean():.4f},\n"
-                  f"Time: {time.time() - self.last_time:.2f} sec,\n"
-                  f"Averall Time: {(time.time() - self.start_time)/60:.2f} min")
+                  f" Loss: {trainer._log_buffer['batch_loss'][-1]:.4f},\n"
+                  f" Time: {time.time() - self.last_time:.2f} sec,\n"
+                  f" Overall Time: {(time.time() - self.global_start_time)/60:.2f} min")
             self.last_time = time.time()
+
+
+    def on_epoch_end(self, trainer, **kwargs):
+        print(f"Epoch Ended!\n"
+              f"Epoch: {self.current_epoch + 1}/{self.num_epochs},\n"
+              f" Loss: {trainer._log_buffer['epoch_loss'][-1]:.4f},\n"
+              f" Time: {(time.time() - self.start_time)/60:.2f} min")
+        self.last_time = time.time()
+
+    def on_validation_start(self, trainer, **kwargs):
+        self.start_time = time.time()
+
+    def on_validation_batch_end(self, trainer, **kwargs):
+        batch_idx = kwargs.get('batch_idx')
+
+        if (batch_idx + 1) % self.log_interval == 0:
+            val_loader_len = 0
+            if trainer.val_loader:
+                val_loader_len = len(trainer.val_loader)
+            print(f"Val Batch: {batch_idx + 1}/{val_loader_len},\n"
+                  f" Loss: {trainer._log_buffer['val_batch_loss'][-1]:.4f},\n"
+                  f" Time: {time.time() - self.last_time:.2f} sec,\n"
+                  f" Overall Time: {(time.time() - self.global_start_time)/60:.2f} min")
+            self.last_time = time.time()
+
+    def on_validation_end(self, trainer, **kwargs):
+        # val_loss = kwargs.get('avg_loss')
+        print(f'Validation end!\n'
+              f' Avg. Loss: {trainer._log_buffer['val_loss'][-1]:.4f},\n'
+              f' Time: {(time.time() - self.start_time)/60:.2f} min')
+
+
 
 class TensorBoardLogger(Callback):
     """Логирование в TensorBoard."""

@@ -13,7 +13,7 @@ if tokenizer.pad_token is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 6
+BATCH_SIZE = 4
 EPOCHS = 3
 LEARNING_RATE = 1e-5
 
@@ -44,7 +44,7 @@ model.apply(init_weights)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.05)
 criterion = torch.nn.CrossEntropyLoss()
 
-text = read_files(['data/text1.txt', 'data/text2.txt', 'data/text3.txt'], encoding='utf-8')
+text = read_files(['data/text1.txt', 'data/text2.txt', 'data/text3.txt', 'data/test.txt'], encoding='utf-8')
 split_text = list(map(lambda x: x.replace('\n\n', '\n').split('Часть '), text))
 
 
@@ -64,10 +64,20 @@ mini_datasets = [TextDatasetWithTokenizer(
     min_len=WINDOW_SIZE,
     ) for text_fragment in filtered_text]
 
-combined_dataset = ConcatDataset(mini_datasets)
+# combined_dataset = ConcatDataset(mini_datasets)
 
-dataloader = PaddedDataLoader(
-    combined_dataset,
+train_dataset = ConcatDataset(mini_datasets[:-2])
+val_dataset = ConcatDataset(mini_datasets[-2:])
+
+train_loader = PaddedDataLoader(
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    pad_token=0,
+    shuffle=True,
+)
+
+val_loader = PaddedDataLoader(
+    val_dataset,
     batch_size=BATCH_SIZE,
     pad_token=0,
     shuffle=True,
@@ -87,8 +97,8 @@ trainer = DecoderOnlyMACTitanBaseTrainer(
     model=model,
     optimizer=optimizer,
     loss_fn=criterion,
-    train_loader=dataloader,
-    val_loader=None,
+    train_loader=train_loader,
+    val_loader=val_loader,
     device=DEVICE,
     grad_accumulation_steps=1,
     callbacks=callbacks
