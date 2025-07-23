@@ -286,6 +286,10 @@ class NanDetector(Callback):
 
     def on_before_optimizer_step(self, trainer, **kwargs):
         for name, param in trainer.model.named_parameters():
+            if param.grad is None:
+                print(param.device)
+                raise ValueError(f"None в градиентах {name}")
+            # print("Параметр:", name)
             if torch.isnan(param.grad).any():
                 raise ValueError(f"NaN в градиентах {name}")
 

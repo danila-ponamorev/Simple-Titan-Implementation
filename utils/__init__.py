@@ -1,6 +1,7 @@
 from .dataset import TextDatasetTitanBasic, TextDatasetWithTokenizer, SimpleTextDatasetWithTokenizerFromFile
 from .helpers import normalize_grad, debug_tensor, init_weights, align_tensors_by_length, align_sequences
 from .loaders import ParallelLoader, MixedDataLoader, PaddedDataLoader
+from .iterators import PaddedDataLoaderIter
 
 __all__ = [
     'TextDatasetTitanBasic',
@@ -14,4 +15,5 @@ __all__ = [
     'ParallelLoader',
     'MixedDataLoader',
     'PaddedDataLoader',
+    'PaddedDataLoaderIter',
 ]

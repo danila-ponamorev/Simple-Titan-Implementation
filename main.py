@@ -1,7 +1,8 @@
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
 from models import DecoderOnlyMACTitan
-from training.trainer import DecoderOnlyMACTitanBaseTrainer
+from models.titan import DecoderOnlyMACTitanQKV
+from training.trainer import DecoderOnlyMACTitanBaseTrainer, DecoderOnlyMACTitanQKVBaseTrainer
 from utils.dataset import TextDatasetWithTokenizer
 from transformers import GPT2Tokenizer
 from training.callbacks import MetricLogger, NanDetector, GPUMemoryLogger, LogPrinter, ModelCheckpoint
@@ -22,12 +23,12 @@ D_MODEL = 768
 N_HEADS = 8
 N_LAYERS = 8
 D_FF = 3072
-MEMORY_DEPTH = 8
+MEMORY_DEPTH = 4
 MEMORY_LR = 1e-5
 DROPOUT = 0.1
 WINDOW_SIZE = 256
 
-model = DecoderOnlyMACTitan(
+model = DecoderOnlyMACTitanQKV(
     VOCAB_SIZE,
     D_MODEL,
     N_HEADS,
@@ -39,9 +40,11 @@ model = DecoderOnlyMACTitan(
     WINDOW_SIZE,
 ).to(DEVICE)
 
+
+# model.load_state_dict(torch.load('checkpoints/MACTitan_best.pt', 'cuda'))
 model.apply(init_weights)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.05)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE / BATCH_SIZE, weight_decay=0.05)
 criterion = torch.nn.CrossEntropyLoss()
 
 text = read_files(['data/text1.txt', 'data/text2.txt', 'data/text3.txt', 'data/test.txt'], encoding='utf-8')
@@ -85,14 +88,14 @@ val_loader = PaddedDataLoader(
 
 callbacks = [
     MetricLogger(),
-    LogPrinter(100),
+    LogPrinter(10),
     # NanDetector(),
     GPUMemoryLogger(),
-    ModelCheckpoint('checkpoints/MACTitan.pt'),
+    ModelCheckpoint('checkpoints/MACTitan_a.pt'),
 ]
 
 
-trainer = DecoderOnlyMACTitanBaseTrainer(
+trainer = DecoderOnlyMACTitanQKVBaseTrainer(
     padding_token=tokenizer.pad_token_id,
     model=model,
     optimizer=optimizer,
