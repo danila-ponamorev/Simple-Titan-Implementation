@@ -4,6 +4,8 @@ from torch.func import functional_call
 from torch.nn import functional as F
 from typing import Dict, List
 import math
+from .attention import MaskedMultiHeadAttentionForMemory
+from .base_components import PositionwiseFeedForward
 
 from .memory_models import MemoryMLP
 from utils.helpers import normalize_grad
@@ -52,22 +54,6 @@ class NeuralMemoryFixedRhoAlpha(nn.Module):
                 retain_graph=True
             )
             grad_tuple = normalize_grad(grad_tuple, max_norm=1.0)
-
-            # if k.requires_grad:
-            #     grad_k = torch.autograd.grad(loss, self.to_k.parameters(), retain_graph=True)
-            #     for param, grad in zip(self.to_k.parameters(), grad_k):
-            #         if param.grad is None:
-            #             param.grad = grad
-            #         else:
-            #             param.grad += grad
-            #
-            # if v.requires_grad:
-            #     grad_v = torch.autograd.grad(loss, self.to_v.parameters())
-            #     for param, grad in zip(self.to_v.parameters(), grad_v):
-            #         if param.grad is None:
-            #             param.grad = grad
-            #         else:
-            #             param.grad += grad
 
         # Обновляем веса памяти
         new_weights = {}
@@ -402,4 +388,60 @@ class NeuralMemoryFixedRhoAlphaQKV(nn.Module):
             memory_states_list.append(new_memory_state)
 
         return memory_states_list, surprises_list
+
+class NeuralMemoryAsContextLayer(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, n_heads: int, depth: int, alpha: float = 0.1, rho: float = 0.01,  learning_rate: float = 0.001, dropout: float = 0.1):
+        super().__init__()
+
+        self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout)
+
+        self.q = nn.Linear(d_model, d_model)
+        self.k = nn.Linear(d_model, d_model)
+        self.v = nn.Linear(d_model, d_model)
+
+        self.attention = MaskedMultiHeadAttentionForMemory(d_model, n_heads, dropout)
+        self._neural_memory = NeuralMemoryFixedRhoAlphaQKV(d_model, depth, alpha, rho, learning_rate)
+
+        self.norm_1 = nn.LayerNorm(d_model)
+        self.norm_2 = nn.LayerNorm(d_model)
+
+    def reset_memory_batch(self, batch_size):
+        memory_states, past_surprises = self._neural_memory.reset_memory_batch(batch_size, self.q.weight.device)
+        return memory_states, past_surprises
+
+    def store(self, x:torch.Tensor, memory_states, past_surprises):
+        Q = self.q(x)
+
+        retrieve = self._neural_memory.retrieve_batch(x, memory_states, Q)
+        x_with_memory = torch.cat([retrieve, x], dim=1)
+
+        K = self.k(x_with_memory)
+        V = self.v(x_with_memory)
+
+        memory_states, past_surprises = self._neural_memory.store_batch(memory_states, past_surprises, K, V)
+
+        return memory_states, past_surprises
+
+    def forward(self, x:torch.Tensor, memory_states, past_surprises, mask):
+        Q = self.q(x)
+
+        retrieve = self._neural_memory.retrieve_batch(x, memory_states, Q)
+        x_with_memory = torch.cat([retrieve, x], dim=1)
+
+        Q = self.q(x_with_memory)
+        K = self.k(x_with_memory)
+        V = self.v(x_with_memory)
+
+        attention_output = self.attention(x_with_memory, Q, K, V, mask)
+        attn_output_norm = self.norm_1(attention_output)
+
+        x_after_attn = attn_output_norm + x_with_memory
+        x_after_attn_norm = self.norm_2(x_after_attn)
+
+        ff_output = self.feed_forward(x_after_attn_norm)
+        output = x_after_attn + ff_output
+
+        memory_states, past_surprises = self._neural_memory.store_batch(memory_states, past_surprises, K, V)
+
+        return output, memory_states, past_surprises
 

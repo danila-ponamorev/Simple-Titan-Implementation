@@ -1,8 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
-from models import DecoderOnlyMACTitan
-from models.titan import DecoderOnlyMACTitanQKV
-from training.trainer import DecoderOnlyMACTitanBaseTrainer, DecoderOnlyMACTitanQKVBaseTrainer
+from models.titan import FastDecoderOnlyMACTitan, DecoderOnlyMACTitanQKV
+from training.trainer import DecoderOnlyMACTitanBaseTrainer, DecoderOnlyMACTitanQKVBaseTrainer, FastDecoderOnlyMACTitanBaseTrainer
 from utils.dataset import TextDatasetWithTokenizer
 from transformers import GPT2Tokenizer
 from training.callbacks import MetricLogger, NanDetector, GPUMemoryLogger, LogPrinter, ModelCheckpoint
@@ -23,12 +22,12 @@ D_MODEL = 768
 N_HEADS = 8
 N_LAYERS = 8
 D_FF = 3072
-MEMORY_DEPTH = 4
+MEMORY_DEPTH = 6
 MEMORY_LR = 1e-5
 DROPOUT = 0.1
 WINDOW_SIZE = 256
 
-model = DecoderOnlyMACTitanQKV(
+model = FastDecoderOnlyMACTitan(
     VOCAB_SIZE,
     D_MODEL,
     N_HEADS,
@@ -86,16 +85,18 @@ val_loader = PaddedDataLoader(
     shuffle=True,
 )
 
+user_id = 1128997870
+
 callbacks = [
     MetricLogger(),
-    LogPrinter(10),
+    LogPrinter(user_id, 10),
     # NanDetector(),
     GPUMemoryLogger(),
     ModelCheckpoint('checkpoints/MACTitan_a.pt'),
 ]
 
 
-trainer = DecoderOnlyMACTitanQKVBaseTrainer(
+trainer = FastDecoderOnlyMACTitanBaseTrainer(
     padding_token=tokenizer.pad_token_id,
     model=model,
     optimizer=optimizer,

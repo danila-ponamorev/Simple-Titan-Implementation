@@ -183,16 +183,22 @@ class MetricLogger(Callback):
 
 
 class LogPrinter(Callback):
-    def __init__(self, log_interval: int = 10):
+    def __init__(self, user_id: int, log_interval: int = 10):
         super().__init__()
+        import telebot
+        from config import API_TOKEN
         self.log_interval = log_interval
         self.global_start_time = None
         self.last_time = None
         self.start_time = None
         self.num_epochs = None
         self.current_epoch = None
+        self.sent_message = None
+        self.user_id = user_id
+        self.bot = telebot.TeleBot(API_TOKEN)
 
     def on_train_start(self, trainer, **kwargs):
+        self.sent_message = self.bot.send_message(self.user_id, 'Train started!')
         num_epochs = kwargs.get('num_epochs')
         self.global_start_time = time.time()
         self.num_epochs = num_epochs
@@ -217,6 +223,15 @@ class LogPrinter(Callback):
                   f" Loss: {trainer._log_buffer['batch_loss'][-1]:.4f},\n"
                   f" Time: {time.time() - self.last_time:.2f} sec,\n"
                   f" Overall Time: {(time.time() - self.global_start_time)/60:.2f} min")
+
+            text = f"""Epoch: {self.current_epoch}/{self.num_epochs},
+                    Global Step: {global_step + 1}/{len(trainer.train_loader) * self.num_epochs},
+                    Batch: {batch_idx + 1}/{len(trainer.train_loader)},
+                    Loss: {trainer._log_buffer['batch_loss'][-1]:.4f},
+                    Time: {time.time() - self.last_time:.2f} sec,
+                    Overall Time: {(time.time() - self.global_start_time)/60:.2f} min"""
+            if self.sent_message is not None:
+                self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
             self.last_time = time.time()
 
 

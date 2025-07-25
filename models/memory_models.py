@@ -21,8 +21,8 @@ class MemoryMLP(nn.Module):
         self.dim = dim
 
         self.weights = nn.ParameterList([nn.Parameter(torch.ones(dim, dim) / 10.0) for _ in range(depth)])
-        for weight in self.weights:
-            nn.init.xavier_uniform_(weight)
+        # for weight in self.weights:
+        #     nn.init.xavier_uniform_(weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

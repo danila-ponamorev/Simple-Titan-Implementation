@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Union, Dict
 
 import torch
 from torch import nn
@@ -13,6 +13,18 @@ def normalize_grad(grad, max_norm: float = 1.0):
     total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in grad]), 2)
     clip_coef = max_norm / (total_norm + 1e-6)
     grad = [g * clip_coef if clip_coef < 1 else g for g in grad]
+    return grad
+
+def normalize_grad_fast(grad: Dict, max_norm: float = 1.0):
+    """
+    Нормализует градиенты весов
+    Args:
+        grad (tuple): кортеж градиентов весов вида (torch.Tensor)
+        max_norm (float): Максимальная норма
+    """
+    total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in grad.values()]), 2)
+    clip_coef = max_norm / (total_norm + 1e-6)
+    grad = {n: g * clip_coef if clip_coef < 1 else g for n, g in grad.items()}
     return grad
 
 def debug_tensor(tensor: torch.Tensor, name: str):

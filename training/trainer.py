@@ -372,3 +372,98 @@ class DecoderOnlyMACTitanQKVBaseTrainer(BaseTrainer):
 
         return torch.stack(aligned)
 
+
+class FastDecoderOnlyMACTitanBaseTrainer(BaseTrainer):
+    def __init__(self, padding_token: int, **kwargs):
+        self.padding_token = padding_token
+        super().__init__(**kwargs)
+
+    def _forward_pass(self, batch):
+        """Выполняет forward pass с выравниванием входных последовательностей и обновлением памяти.
+
+        Args:
+            batch: Кортеж (inputs, targets), где:
+                inputs - тензор/список тензоров с входными последовательностями
+                targets - тензор с целевыми значениями
+
+        Returns:
+            Словарь с:
+                loss - значение функции потерь
+                outputs - выходы модели
+                targets - целевые значения
+        """
+        inputs, targets = batch
+        inputs = inputs.to(self.device)
+        targets = targets.to(self.device)
+
+        if not isinstance(inputs, list):
+            inputs = [inputs] if inputs.dim() == 1 else [x for x in inputs]
+
+        aligned_inputs = self._align_sequences(
+            sequences=inputs,
+            pad_value=self.padding_token,
+            dim=0
+        )
+
+        batch_size = aligned_inputs.size(0)
+
+        memory_state, past_surprise = self.model.neural_memory.new_states_for_batch(batch_size, self.device)
+
+        memory_state, past_surprise = self.model.store(
+                aligned_inputs,
+                memory_state,
+                past_surprise
+            )
+
+        outputs, _, _ = self.model(aligned_inputs[:, -self.model.window_size:], memory_state, past_surprise)
+
+        outputs = outputs.view(-1, outputs.size(-1))
+        targets = targets.view(-1)
+
+        # print(targets.shape, outputs.shape)
+
+        loss = self.loss_fn(outputs, targets)
+
+        return {
+            "loss": loss,
+            "outputs": outputs,
+            "targets": targets,
+            "aligned_inputs": aligned_inputs
+        }
+
+    def _align_sequences(self, sequences, pad_value=0, dim=0):
+        """Выравнивает последовательности добавлением pad_value в начало.
+
+        Args:
+            sequences: Список тензоров формы [seq_len] или [batch, seq_len]
+            pad_value: Значение для padding
+            dim: Измерение для выравнивания
+
+        Returns:
+            Выровненный тензор формы [batch, max_seq_len]
+        """
+        max_len = max(s.size(dim) for s in sequences)
+
+        aligned = []
+
+        for seq in sequences:
+            pad_size = max_len - seq.size(dim)
+
+            if pad_size > 0:
+                pad_shape = list(seq.shape)
+                pad_shape[dim] = pad_size
+                padding = torch.full(
+                    pad_shape,
+                    pad_value,
+                    dtype=seq.dtype,
+                    device=seq.device
+                )
+
+                aligned_seq = torch.cat([padding, seq], dim=dim)
+            else:
+                aligned_seq = seq
+
+            aligned.append(aligned_seq)
+
+        return torch.stack(aligned)
+
