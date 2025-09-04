@@ -32,7 +32,7 @@ class PaddedDataLoaderIter(_BaseDataLoaderIter):
                                      self.pad_token,
                                      dtype=item.dtype,
                                      device=item.device)
-                padded_item = torch.cat([padding, item], dim=0)
+                padded_item = torch.cat([item, padding], dim=0)
             else:
                 padded_item = item
             padded1.append(padded_item)
@@ -47,7 +47,7 @@ class PaddedDataLoaderIter(_BaseDataLoaderIter):
                                      self.pad_token,
                                      dtype=item.dtype,
                                      device=item.device)
-                padded_item = torch.cat([padding, item], dim=0)
+                padded_item = torch.cat([item, padding], dim=0)
             else:
                 padded_item = item
             padded2.append(padded_item)

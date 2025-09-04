@@ -26,6 +26,28 @@ class MaskedMultiHeadAttention(nn.Module):
         self.dropout_attention = nn.Dropout(dropout)  # Attention dropout
         self.dropout_out = nn.Dropout(dropout)
 
+    def _prepare_attention_mask(self, mask, n_heads):
+        """
+        Подготавливает маску для MultiHeadAttention.
+
+        Args:
+            mask: Tensor формы (batch_size, seq_len) или (batch_size, seq_len, seq_len)
+            n_heads: количество голов внимания
+
+        Returns:
+            mask: Tensor формы (batch_size, n_heads, seq_len, seq_len)
+        """
+        if mask.dim() == 2:
+            # (B, seq_len) -> (B, 1, 1, seq_len) -> (B, n_heads, seq_len, seq_len)
+            mask = mask.unsqueeze(1).unsqueeze(2)
+            mask = mask.expand(-1, n_heads, -1, -1)
+        elif mask.dim() == 3:
+            # (B, seq_len, seq_len) -> (B, 1, seq_len, seq_len) -> (B, n_heads, seq_len, seq_len)
+            mask = mask.unsqueeze(1)
+            mask = mask.expand(-1, n_heads, -1, -1)
+
+        return mask
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
@@ -46,12 +68,18 @@ class MaskedMultiHeadAttention(nn.Module):
 
         # 3. Attention scores
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_head)
-
+        # print('no mask', scores)
         if mask is not None:
+            # print(mask)
+            if mask.shape != scores.shape:
+                mask = self._prepare_attention_mask(mask, self.n_heads)
+            # print(mask)
             scores = scores.masked_fill(mask == 0, -1e9)
-
+            # print('masked', scores)
         # 4. Attention dropout (optional)
+        # print(scores)
         attention_weights = torch.softmax(scores, dim=-1)
+        # print(attention_weights)
         attention_weights = self.dropout_attention(attention_weights)  # Dropout на весах
 
         # 5. Context computation

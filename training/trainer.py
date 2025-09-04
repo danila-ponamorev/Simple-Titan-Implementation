@@ -1,10 +1,9 @@
-from typing import List, Dict, Optional, Callable, Any
+from typing import List, Dict, Optional, Callable, Any, Tuple
 import torch
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from abc import ABC, abstractmethod
+from abc import ABC
 from .callbacks import Callback
-from models import DecoderOnlyMACTitan
 
 class BaseTrainer(ABC):
     def __init__(
@@ -56,17 +55,14 @@ class BaseTrainer(ABC):
         if phase not in self._log_history:
             raise ValueError(f"Неизвестная фаза логирования: {phase}. Допустимо: 'train', 'val', 'custom'")
 
-        # Сохраняем для текущего шага
         self._current_logs[metric_name] = value
 
-        # Добавляем в историю
         self._log_history[phase].append({
             'step': self.global_step,
             'epoch': self.current_epoch,
             metric_name: value
         })
 
-        # Буферизация для агрегации
         if metric_name not in self._log_buffer:
             self._log_buffer[metric_name] = []
         self._log_buffer[metric_name].append(value)
@@ -143,8 +139,9 @@ class BaseTrainer(ABC):
         val_len = len(self.val_loader)
         for batch_idx, batch in enumerate(self.val_loader):
             self._run_callbacks('on_validation_batch_start', batch=batch)
+            with torch.no_grad():
+                outputs = self._forward_pass(batch)
 
-            outputs = self._forward_pass(batch)
             val_metrics = self._update_metrics(val_metrics, outputs)
 
             total_loss += outputs['loss'].item()
@@ -156,7 +153,7 @@ class BaseTrainer(ABC):
                         loss=outputs['loss'],
             )
         avg_loss = total_loss / val_len
-        self.metrics.update({'val_loss': total_loss})
+        self.metrics.update({'val_loss': avg_loss})
         self._run_callbacks('on_validation_end', loss=avg_loss)
 
     def _forward_pass(self, batch) -> Dict:
@@ -174,17 +171,17 @@ class BaseTrainer(ABC):
         }
 
     def _update_metrics(self, metrics_dict: Dict, outputs: Dict):
-        # Реализация расчета метрик (accuracy, F1 и т.д.)
         pass
 
     def _slice_batch(self, batch, accumulation_step):
         """Разделение batch'а для gradient accumulation."""
-        # Реализация зависит от структуры данных
         return batch
 
+
 class DecoderOnlyMACTitanBaseTrainer(BaseTrainer):
-    def __init__(self, padding_token: int, **kwargs):
+    def __init__(self, padding_token: int, chunk_size: int = 16, **kwargs):
         self.padding_token = padding_token
+        self.chunk_size = chunk_size
         super().__init__(**kwargs)
 
     def _forward_pass(self, batch):
@@ -205,231 +202,86 @@ class DecoderOnlyMACTitanBaseTrainer(BaseTrainer):
         inputs = inputs.to(self.device)
         targets = targets.to(self.device)
 
-        if not isinstance(inputs, list):
-            inputs = [inputs] if inputs.dim() == 1 else [x for x in inputs]
+        prepared_inputs = self._prepare_sequences(inputs, max_len=self.model.window_size, pad_token=self.padding_token)
+        prepared_targets = self._prepare_sequences(targets, max_len=self.model.window_size,pad_token=self.padding_token)
 
-        aligned_inputs = self._align_sequences(
-            sequences=inputs,
-            pad_value=self.padding_token,
-            dim=0
-        )
-
-        batch_size = aligned_inputs.size(0)
-
-        memory_states, past_surprises = self.model.neural_memory.reset_memory_batch(batch_size)
-
-        if hasattr(self.model, 'store'):
-            memory_states, _ = self.model.store(
-                aligned_inputs,
-                memory_states,
-                past_surprises
-            )
-
-        outputs = self.model(aligned_inputs[:, -self.model.window_size:], memory_states)
-
-        outputs = outputs.view(-1, outputs.size(-1))
-        targets = targets.view(-1)
-
-        # print(targets.shape, outputs.shape)
-
-        loss = self.loss_fn(outputs, targets)
-
-        return {
-            "loss": loss,
-            "outputs": outputs,
-            "targets": targets,
-            "aligned_inputs": aligned_inputs
-        }
-
-    def _align_sequences(self, sequences, pad_value=0, dim=0):
-        """Выравнивает последовательности добавлением pad_value в начало.
-
-        Args:
-            sequences: Список тензоров формы [seq_len] или [batch, seq_len]
-            pad_value: Значение для padding
-            dim: Измерение для выравнивания
-
-        Returns:
-            Выровненный тензор формы [batch, max_seq_len]
-        """
-        max_len = max(s.size(dim) for s in sequences)
-
-        aligned = []
-
-        for seq in sequences:
-            pad_size = max_len - seq.size(dim)
-
-            if pad_size > 0:
-                pad_shape = list(seq.shape)
-                pad_shape[dim] = pad_size
-                padding = torch.full(
-                    pad_shape,
-                    pad_value,
-                    dtype=seq.dtype,
-                    device=seq.device
-                )
-
-                aligned_seq = torch.cat([padding, seq], dim=dim)
-            else:
-                aligned_seq = seq
-
-            aligned.append(aligned_seq)
-
-        return torch.stack(aligned)
-
-class DecoderOnlyMACTitanQKVBaseTrainer(BaseTrainer):
-    def __init__(self, padding_token: int, **kwargs):
-        self.padding_token = padding_token
-        super().__init__(**kwargs)
-
-    def _forward_pass(self, batch):
-        """Выполняет forward pass с выравниванием входных последовательностей и обновлением памяти.
-
-        Args:
-            batch: Кортеж (inputs, targets), где:
-                inputs - тензор/список тензоров с входными последовательностями
-                targets - тензор с целевыми значениями
-
-        Returns:
-            Словарь с:
-                loss - значение функции потерь
-                outputs - выходы модели
-                targets - целевые значения
-        """
-        inputs, targets = batch
-        inputs = inputs.to(self.device)
-        targets = targets.to(self.device)
-
-        if not isinstance(inputs, list):
-            inputs = [inputs] if inputs.dim() == 1 else [x for x in inputs]
-
-        aligned_inputs = self._align_sequences(
-            sequences=inputs,
-            pad_value=self.padding_token,
-            dim=0
-        )
-
-        batch_size = aligned_inputs.size(0)
-
-        memory_states, past_surprises = self.model.neural_memory.reset_memory_batch(batch_size)
-
-        if hasattr(self.model, 'store'):
-            memory_states, past_surprises = self.model.store(
-                aligned_inputs,
-                memory_states,
-                past_surprises
-            )
-
-        outputs, memory_states, past_surprises = self.model(aligned_inputs[:, -self.model.window_size:], memory_states, past_surprises)
-
-        outputs = outputs.view(-1, outputs.size(-1))
-        targets = targets.view(-1)
-
-        # print(targets.shape, outputs.shape)
-
-        loss = self.loss_fn(outputs, targets)
-
-        return {
-            "loss": loss,
-            "outputs": outputs,
-            "targets": targets,
-            "aligned_inputs": aligned_inputs
-        }
-
-    def _align_sequences(self, sequences, pad_value=0, dim=0):
-        """Выравнивает последовательности добавлением pad_value в начало.
-
-        Args:
-            sequences: Список тензоров формы [seq_len] или [batch, seq_len]
-            pad_value: Значение для padding
-            dim: Измерение для выравнивания
-
-        Returns:
-            Выровненный тензор формы [batch, max_seq_len]
-        """
-        max_len = max(s.size(dim) for s in sequences)
-
-        aligned = []
-
-        for seq in sequences:
-            pad_size = max_len - seq.size(dim)
-
-            if pad_size > 0:
-                pad_shape = list(seq.shape)
-                pad_shape[dim] = pad_size
-                padding = torch.full(
-                    pad_shape,
-                    pad_value,
-                    dtype=seq.dtype,
-                    device=seq.device
-                )
-
-                aligned_seq = torch.cat([padding, seq], dim=dim)
-            else:
-                aligned_seq = seq
-
-            aligned.append(aligned_seq)
-
-        return torch.stack(aligned)
-
-
-class FastDecoderOnlyMACTitanBaseTrainer(BaseTrainer):
-    def __init__(self, padding_token: int, **kwargs):
-        self.padding_token = padding_token
-        super().__init__(**kwargs)
-
-    def _forward_pass(self, batch):
-        """Выполняет forward pass с выравниванием входных последовательностей и обновлением памяти.
-
-        Args:
-            batch: Кортеж (inputs, targets), где:
-                inputs - тензор/список тензоров с входными последовательностями
-                targets - тензор с целевыми значениями
-
-        Returns:
-            Словарь с:
-                loss - значение функции потерь
-                outputs - выходы модели
-                targets - целевые значения
-        """
-        inputs, targets = batch
-        inputs = inputs.to(self.device)
-        targets = targets.to(self.device)
-
-        if not isinstance(inputs, list):
-            inputs = [inputs] if inputs.dim() == 1 else [x for x in inputs]
-
-        aligned_inputs = self._align_sequences(
-            sequences=inputs,
-            pad_value=self.padding_token,
-            dim=0
-        )
-
-        batch_size = aligned_inputs.size(0)
+        batch_size = inputs.size(0)
 
         memory_state, past_surprise = self.model.neural_memory.new_states_for_batch(batch_size, self.device)
-
+        memory_inputs = self._prepare_sequences_for_memory(inputs, inputs.shape[1], 16)
         memory_state, past_surprise = self.model.store(
-                aligned_inputs,
+                memory_inputs,
                 memory_state,
-                past_surprise
+                past_surprise,
+                chunk_size=self.chunk_size
             )
 
-        outputs, _, _ = self.model(aligned_inputs[:, -self.model.window_size:], memory_state, past_surprise)
+        outputs, _, _ = self.model(prepared_inputs, memory_state, past_surprise)
+
+        # generated = torch.Tensor([torch.argmax(outputs[0, i, :].view(-1)) for i in range(outputs.size(1))])
 
         outputs = outputs.view(-1, outputs.size(-1))
-        targets = targets.view(-1)
+        prepared_targets = prepared_targets.view(-1)
 
-        # print(targets.shape, outputs.shape)
-
-        loss = self.loss_fn(outputs, targets)
+        loss = self.loss_fn(outputs, prepared_targets)
 
         return {
             "loss": loss,
             "outputs": outputs,
-            "targets": targets,
-            "aligned_inputs": aligned_inputs
+            "targets": prepared_targets,
+            "aligned_inputs": inputs
         }
+
+    def _prepare_sequences(self, tokens, max_len, pad_token=0):
+        """
+        Альтернативная версия с использованием torch.narrow
+        """
+        batch_size, seq_len = tokens.shape
+
+        is_pad = (tokens == pad_token)
+        seq_lengths = is_pad.int().argmax(dim=1)
+        no_pad_mask = (seq_lengths == 0) & (tokens[:, 0] != pad_token)
+        seq_lengths[no_pad_mask] = seq_len
+
+        start_indices = torch.clamp(seq_lengths - max_len, min=0)
+
+        prepared_sequences = torch.full((batch_size, max_len), pad_token,
+                                        dtype=tokens.dtype, device=tokens.device)
+
+        for i in range(batch_size):
+            start_idx = start_indices[i].item()
+            actual_length = min(seq_lengths[i].item() - start_idx, max_len)
+
+            if actual_length > 0:
+                prepared_sequences[i, :actual_length] = tokens[i, start_idx:start_idx + actual_length]
+
+        return prepared_sequences
+
+    def _prepare_sequences_for_memory(self, tokens, max_len, chunk_size, pad_token=0):
+        """
+        Переписать для более эффективного использования.
+        """
+        batch_size, seq_len = tokens.shape
+
+        is_pad = (tokens == pad_token)
+        seq_lengths = is_pad.int().argmax(dim=1)
+        no_pad_mask = (seq_lengths == 0) & (tokens[:, 0] != pad_token)
+        seq_lengths[no_pad_mask] = seq_len
+
+        start_indices = torch.clamp(seq_lengths - seq_len, min=0)
+
+        prepared_sequences = torch.full((batch_size, max_len), pad_token,
+                                        dtype=tokens.dtype, device=tokens.device)
+
+        for i in range(batch_size):
+            start_idx = start_indices[i].item()
+            actual_length = min(seq_lengths[i].item() - start_idx, max_len)
+
+            if actual_length > 0:
+                actual_length = actual_length - actual_length % chunk_size
+                prepared_sequences[i, :actual_length] = tokens[i, start_idx:start_idx + actual_length]
+
+        return prepared_sequences
 
     def _align_sequences(self, sequences, pad_value=0, dim=0):
         """Выравнивает последовательности добавлением pad_value в начало.
@@ -459,7 +311,7 @@ class FastDecoderOnlyMACTitanBaseTrainer(BaseTrainer):
                     device=seq.device
                 )
 
-                aligned_seq = torch.cat([padding, seq], dim=dim)
+                aligned_seq = torch.cat([seq, padding], dim=dim)
             else:
                 aligned_seq = seq
 

@@ -85,15 +85,16 @@ class GradientClipping(Callback):
 
 class EarlyStopping(Callback):
     """Ранняя остановка при отсутствии улучшений."""
-    def __init__(self, monitor='val_loss', patience=5, min_delta=0.01):
+    def __init__(self, monitor='val_loss', patience=15, min_delta=0.01):
         self.monitor = monitor
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
         self.best_value = float('inf')
 
-    def on_epoch_end(self, trainer, **kwargs):
-        current = trainer.metrics[self.monitor]
+    def on_validation_end(self, trainer, **kwargs):
+
+        current = trainer._log_buffer['val_loss'][-1]
         if current < self.best_value - self.min_delta:
             self.best_value = current
             self.counter = 0
@@ -109,7 +110,15 @@ class ModelCheckpoint(Callback):
         self.filepath = filepath
         self.monitor = monitor
         self.best_value = float('inf')
+        self.best_val_value = float('inf')
 
+    def on_validation_end(self, trainer, **kwargs):
+        current_val_value = trainer._log_buffer['val_loss'][-1]
+        if current_val_value < self.best_value:
+            self.best_value = current_val_value
+            torch.save(trainer.model.state_dict(), f"{self.filepath.replace('.pt', '')}_best_val.pt")
+        else:
+            torch.save(trainer.model.state_dict(), f"{self.filepath.replace('.pt', '')}_last_val.pt")
     def on_epoch_end(self, trainer, **kwargs):
         torch.save(trainer.model.state_dict(), self.filepath)
         current = trainer.metrics.get(self.monitor)
@@ -123,7 +132,7 @@ class LRScheduler(Callback):
     def __init__(self, scheduler):
         self.scheduler = scheduler
 
-    def on_epoch_end(self, trainer, **kwargs):
+    def on_validation_end(self, trainer, **kwargs):
         self.scheduler.step()
 
 
@@ -140,19 +149,7 @@ class WarmupScheduler(Callback):
             for param_group in trainer.optimizer.param_groups:
                 param_group['lr'] = lr
 
-
-
-
-class MetricsLogger(Callback):
-    """Логирование метрик в консоль."""
-    def __init__(self):
-        super().__init__()
-    def on_epoch_end(self, trainer, **kwargs):
-        print(f"Epoch {trainer.current_epoch}:")
-        for k, v in trainer.metrics.items():
-            print(f"  {k}: {v:.4f}")
-
-
+#Доделать
 class MetricLogger(Callback):
     def __init__(self):
         super().__init__()
@@ -183,27 +180,38 @@ class MetricLogger(Callback):
 
 
 class LogPrinter(Callback):
+    """Логирует прогресс обучения, включая loss, batch_idx, global step, time"""
     def __init__(self, user_id: int, log_interval: int = 10):
         super().__init__()
         import telebot
         from config import API_TOKEN
         self.log_interval = log_interval
         self.global_start_time = None
+        self.epoch_start_time = None
         self.last_time = None
         self.start_time = None
+        self.val_start_time = None
         self.num_epochs = None
         self.current_epoch = None
         self.sent_message = None
         self.user_id = user_id
         self.bot = telebot.TeleBot(API_TOKEN)
+        self.avg_loss = []
 
     def on_train_start(self, trainer, **kwargs):
-        self.sent_message = self.bot.send_message(self.user_id, 'Train started!')
+        try:
+            self.sent_message = self.bot.send_message(self.user_id, 'Train started!')
+        except:
+            pass
         num_epochs = kwargs.get('num_epochs')
         self.global_start_time = time.time()
         self.num_epochs = num_epochs
 
     def on_epoch_start(self, trainer, **kwargs):
+        try:
+            self.sent_message = self.bot.send_message(self.user_id, 'Epoch started!')
+        except Exception as e:
+            print(f"Could not send message\n Error: {e}")
         epoch = kwargs.get('epoch')
         self.current_epoch = epoch
         self.start_time = time.time()
@@ -215,54 +223,123 @@ class LogPrinter(Callback):
     def on_batch_end(self, trainer, **kwargs):
         batch_idx = kwargs.get('batch_idx')
         global_step = kwargs.get('global_step')
+        loss = kwargs.get("loss")
+        self.avg_loss.append(loss)
 
         if (batch_idx + 1) % self.log_interval == 0:
-            print(f"Epoch: {self.current_epoch}/{self.num_epochs},\n"
-                  f" Global Step: {global_step + 1}/{len(trainer.train_loader) * self.num_epochs},\n"
-                  f" Batch: {batch_idx + 1}/{len(trainer.train_loader)},\n"
-                  f" Loss: {trainer._log_buffer['batch_loss'][-1]:.4f},\n"
-                  f" Time: {time.time() - self.last_time:.2f} sec,\n"
-                  f" Overall Time: {(time.time() - self.global_start_time)/60:.2f} min")
+            text = f"""
+Epoch: {self.current_epoch}/{self.num_epochs},
+    Global Step: {global_step + 1}/{len(trainer.train_loader) * self.num_epochs},
+    Batch: {batch_idx + 1}/{len(trainer.train_loader)},
+    Avg Loss ({self.log_interval} steps): {sum(self.avg_loss)/len(self.avg_loss):.4f},
+    Time: {time.time() - self.last_time:.2f} sec,
+    Overall Time: {(time.time() - self.global_start_time)/60:.2f} min,
+    Estimated Time Left: {(time.time() - self.start_time) / ((batch_idx + 1) / self.log_interval) * (len(trainer.train_loader) - batch_idx) / self.log_interval / 60:.2f} min"""
+            self.avg_loss = []
+            print(text)
 
-            text = f"""Epoch: {self.current_epoch}/{self.num_epochs},
-                    Global Step: {global_step + 1}/{len(trainer.train_loader) * self.num_epochs},
-                    Batch: {batch_idx + 1}/{len(trainer.train_loader)},
-                    Loss: {trainer._log_buffer['batch_loss'][-1]:.4f},
-                    Time: {time.time() - self.last_time:.2f} sec,
-                    Overall Time: {(time.time() - self.global_start_time)/60:.2f} min"""
             if self.sent_message is not None:
-                self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
+                try:
+                    self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
+                except Exception as e:
+                    print(f"ERROR: Could not edit message.\nError: {e}")
             self.last_time = time.time()
 
 
     def on_epoch_end(self, trainer, **kwargs):
-        print(f"Epoch Ended!\n"
-              f"Epoch: {self.current_epoch + 1}/{self.num_epochs},\n"
-              f" Loss: {trainer._log_buffer['epoch_loss'][-1]:.4f},\n"
-              f" Time: {(time.time() - self.start_time)/60:.2f} min")
+        text = f"""
+Epoch Ended!
+    Epoch: {self.current_epoch + 1}/{self.num_epochs},
+    Loss: {trainer._log_buffer['epoch_loss'][-1]:.4f},
+    Time: {(time.time() - self.start_time)/60:.2f} min"""
+        print(text)
+        if self.sent_message is not None:
+            try:
+                self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
+            except Exception as e:
+                print(f"ERROR: Could not edit message.\nError: {e}")
         self.last_time = time.time()
 
     def on_validation_start(self, trainer, **kwargs):
-        self.start_time = time.time()
+        try:
+            self.sent_message = self.bot.send_message(self.user_id, 'Validation started!')
+        except Exception as e:
+            print(f"Could not send message\n Error: {e}")
+        self.val_start_time = time.time()
+
 
     def on_validation_batch_end(self, trainer, **kwargs):
         batch_idx = kwargs.get('batch_idx')
+        loss = kwargs.get('loss')
+
+        self.avg_loss.append(loss)
 
         if (batch_idx + 1) % self.log_interval == 0:
             val_loader_len = 0
             if trainer.val_loader:
                 val_loader_len = len(trainer.val_loader)
-            print(f"Val Batch: {batch_idx + 1}/{val_loader_len},\n"
-                  f" Loss: {trainer._log_buffer['val_batch_loss'][-1]:.4f},\n"
-                  f" Time: {time.time() - self.last_time:.2f} sec,\n"
-                  f" Overall Time: {(time.time() - self.global_start_time)/60:.2f} min")
+            text = f"""
+Val Batch: {batch_idx + 1}/{val_loader_len},
+    Loss: {loss:.4f},
+    Avg Loss ({self.log_interval} steps): {sum(self.avg_loss)/len(self.avg_loss):.4f}
+    Time: {time.time() - self.last_time:.2f} sec,
+    Overall Time: {(time.time() - self.val_start_time)/60:.2f} min
+    Estimated Time Left: {(time.time() - self.val_start_time) / ((batch_idx + 1) / self.log_interval) * (val_loader_len - batch_idx - 1) / self.log_interval / 60:.2f}"""
+            self.avg_loss = []
+            print(text)
+            if self.sent_message is not None:
+                try:
+                    self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
+                except Exception as e:
+                    print(f"ERROR: Could not edit message.\nError: {e}")
             self.last_time = time.time()
 
     def on_validation_end(self, trainer, **kwargs):
-        # val_loss = kwargs.get('avg_loss')
-        print(f'Validation end!\n'
-              f' Avg. Loss: {trainer._log_buffer['val_loss'][-1]:.4f},\n'
-              f' Time: {(time.time() - self.start_time)/60:.2f} min')
+        loss = kwargs.get("loss")
+        text = f"""
+Validation end!
+    Avg. Loss: {loss:.4f},
+    Time: {(time.time() - self.val_start_time)/60:.2f} min"""
+        print(text)
+        if self.sent_message is not None:
+            try:
+                self.bot.edit_message_text(chat_id=self.user_id, message_id=self.sent_message.message_id, text=text)
+            except Exception as e:
+                print(f"ERROR: Could not edit message.\nError: {e}")
+
+
+class ValidationCallback(Callback):
+    def __init__(self, val_interval):
+        super().__init__()
+        self.val_interval = val_interval
+
+    def on_train_start(self, trainer, **kwargs):
+        for callback in trainer.callbacks:
+            if type(callback) is LogPrinter:
+                callback.last_time = time.time()
+        trainer.validate()
+        trainer.model.train()
+        for callback in trainer.callbacks:
+            if type(callback) is LogPrinter:
+                try:
+                    callback.sent_message = callback.bot.send_message(callback.user_id, "Epoch continued!")
+                except Exception as e:
+                    print(f"Could not send message.\nError: {e}")
+                callback.last_time = time.time()
+
+    def on_batch_end(self, trainer, **kwargs):
+        batch_idx = kwargs.get('batch_idx')
+        if (batch_idx + 1) % self.val_interval == 0:
+            trainer.validate()
+            trainer.model.train()
+            for callback in trainer.callbacks:
+                if type(callback) is LogPrinter:
+                    try:
+                        callback.sent_message = callback.bot.send_message(callback.user_id, "Epoch continued!")
+                    except Exception as e:
+                        print(f"Could not send message.\nError: {e}")
+                    callback.last_time = time.time()
+
 
 
 
@@ -296,6 +373,7 @@ class GPUMemoryLogger(Callback):
             trainer.log('memory/allocated_mb', alloc, phase='custom')
             trainer.log('memory/reserved_mb', reserved, phase='custom')
 
+
 class NanDetector(Callback):
     """Детектирование NaN в градиентах."""
 
@@ -308,50 +386,6 @@ class NanDetector(Callback):
             if torch.isnan(param.grad).any():
                 raise ValueError(f"NaN в градиентах {name}")
 
-
-class GradientStats(Callback):
-    """Статистика градиентов."""
-
-    def on_before_optimizer_step(self, trainer, **kwargs):
-        grads = []
-        for param in trainer.model.parameters():
-            if param.grad is not None:
-                grads.append(param.grad.norm())
-
-        if grads:
-            avg_grad = torch.mean(torch.stack(grads))
-            trainer.log('grad/avg_norm', avg_grad)
-
-
-class FreezeUnusedParameters(Callback):
-    """Заморозка неиспользуемых параметров."""
-    def on_train_start(self, trainer, **kwargs):
-        for name, param in trainer.model.named_parameters():
-            if 'memory' not in name:
-                param.requires_grad = False
-
-
-class BatchTimeProfiler(Callback):
-    """Профилирование времени обработки батча."""
-    def __init__(self):
-        self.start_time = None
-
-    def on_batch_start(self, trainer, **kwargs):
-        self.start_time = time.time()
-
-    def on_batch_end(self, trainer, **kwargs):
-        duration = time.time() - self.start_time
-        trainer.log('time/batch_sec', duration)
-
-class AttentionVisualizer(Callback):
-    """Визуализация attention heads."""
-    def __init__(self, layer_idx: int = 0):
-        self.layer_idx = layer_idx
-
-    def on_validation_batch_end(self, trainer, **kwargs):
-        if hasattr(trainer.model, 'get_attention_maps'):
-            attn_maps = trainer.model.get_attention_maps()
-            # Визуализация через matplotlib/TensorBoard
 
 class CompositeCallback(Callback):
     """Группировка нескольких callback'ов."""

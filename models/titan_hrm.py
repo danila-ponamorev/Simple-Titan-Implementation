@@ -1,23 +1,26 @@
-import torch
-from torch import nn
-from torch.func import functional_call
+#написать реализацию HRM Titan сюда
 import math
 
+from torch import nn
+from torch.func import functional_call
+import torch
+
+from .base_components import HRMInner, HRMBlock, HRMInnerCarry
+from .neural_memory import NeuralMemoryAsContextLayerWithResidual, NeuralMemoryAsContextLayer
 from .positional_encoding import PositionalEncoding
-from .base_components import DecoderBlock
-from .neural_memory import NeuralMemoryAsContextLayer, NeuralMemoryAsContextLayerWithResidual
-class DecoderOnlyMACTitan(nn.Module):
-    """
-    Простейшая реализвация Titan MemoryAsContext без PersistentMemory.
-    """
+
+class DecoderOnlyMACTitanHRM(nn.Module):
     def __init__(
             self,
             vocab_size: int,
             d_model: int,
             n_heads: int,
-            n_layers: int,
             d_ff: int,
             memory_depth: int,
+            H_depth: int,
+            L_depth: int,
+            H_cycles: int,
+            L_cycles: int,
             memory_lr: float = 1e-5,
             dropout: float = 0.1,
             max_len: int = 512
@@ -28,16 +31,13 @@ class DecoderOnlyMACTitan(nn.Module):
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, dropout, max_len)
-        self.decoder_layers = nn.ModuleList([DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        self.inner = HRMInner(d_model, n_heads, d_ff, H_depth, L_depth, H_cycles, L_cycles, dropout)
         self.fc_out = nn.Linear(d_model, vocab_size)
-        self.neural_memory = NeuralMemoryAsContextLayerWithResidual(d_model, d_ff, n_heads, memory_depth, memory_lr, dropout=dropout)
+        self.neural_memory = NeuralMemoryAsContextLayerWithResidual(d_model, d_ff, n_heads, memory_depth, memory_lr)
 
         self.norm_memory = nn.LayerNorm(d_model)
-        self.norm_final = nn.LayerNorm(vocab_size)
 
-        self.dropout_embed = nn.Dropout(dropout)
-        self.dropout_pos = nn.Dropout(dropout)
-        self.dropout_memory = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def mask_to_attention_mask(self, mask):
         """
@@ -74,42 +74,40 @@ class DecoderOnlyMACTitan(nn.Module):
             end_index = min(i + chunk_size, seq_len)
             chunk = src[:, i:end_index].to(device)
             _, chunk_len = chunk.shape
-            # mask = self._generate_square_subsequent_mask(chunk_len * 2, device)
             embedded_src = functional_call(self.token_embedding, token_embedding_weights_dict, (chunk,))
             src_pos = functional_call(self.positional_encoding, positional_encoding_weights_dict, (embedded_src,))
             new_state, surprise = self.neural_memory.store(src_pos, new_state, surprise)
 
         return new_state, surprise
 
-    def forward(self, src: torch.Tensor, memory_state, past_surprise) -> torch.Tensor:
+    def forward(self, src, memory_state, past_surprise):
         """
         Args:
             src (torch.Tensor): Входной тензор, форма (batch_size, seq_len)
             memory_state (dict): Словарь вида {name: torch.tensor}.
-            past_surprise (dict): past_surprise (list): Список, вида [torch.Tensor]
         """
+
         batch_size, seq_len = src.shape
         device = src.device
-        mask = src != 0
-        src_mask = self.mask_to_attention_mask(mask)
+        mask = src != 0 #заменить на pad_token
 
+        src_mask = self.mask_to_attention_mask(mask)
         # 1. Embeddings + positional encodings
         embedded_src = self.token_embedding(src) * math.sqrt(self.d_model)
-        embedded_src = self.dropout_embed(embedded_src)
 
         src_pos = self.positional_encoding(embedded_src)
-        src_pos = self.dropout_pos(src_pos)
 
-        # 2. Neural Memory
         mem_res, new_state, surprise = self.neural_memory(src_pos, memory_state, past_surprise, src_mask)
-        # mem_res = self.norm_memory(mem_res)
-        output = mem_res
-        # 3. Decoder Layers
-        for layer in self.decoder_layers:
-            output = layer(output, src_mask)
 
-        # 4. Final layer
-        # output = output[:, seq_len:, :]
-        output = self.fc_out(output)
+        z_L = mem_res
+        z_H = torch.ones_like(z_L)
+        carry = HRMInnerCarry(z_H, z_L)
+        new_carry = self.inner(mem_res, carry, src_mask)
+
+        output = self.fc_out(new_carry.z_H)
 
         return output, new_state, surprise
+
+
+
+
