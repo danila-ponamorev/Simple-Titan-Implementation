@@ -1,6 +1,7 @@
 from abc import ABC #, abstractmethod
 import torch
 import time
+import os
 from typing import List
 
 
@@ -111,6 +112,11 @@ class ModelCheckpoint(Callback):
         self.monitor = monitor
         self.best_value = float('inf')
         self.best_val_value = float('inf')
+
+        #Исправить проверку
+        if not os.path.exists('checkpoints'):
+            os.mkdir('checkpoints')
+
 
     def on_validation_end(self, trainer, **kwargs):
         current_val_value = trainer._log_buffer['val_loss'][-1]
