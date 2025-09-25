@@ -66,6 +66,26 @@ def init_weights(m):
     elif isinstance(m, nn.Embedding):
         nn.init.normal_(m.weight, mean=0, std=0.02)
 
+def _custom_linear_forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Альтернативная версия метода forward для nn.Linear, которая выглядит так: W @ silu(W^T @ silu(W @ x)).
+    Args:
+        x(torch.Tensor): Входной тензор.
+    """
+    x = F.linear(x, self.weight, self.bias)
+    x = F.silu(x)
+    x = F.linear(x, torch.transpose(self.weight, -1, -2))
+    x = F.silu(x)
+    return F.linear(x, self.weight, self.bias)
+
+def patch_forward_linear_method(m):
+    """
+    Меняет меняет метод forward для nn.Linear
+    Args:
+        m: Модуль.
+    """
+    if isinstance(m, nn.Linear):
+        m.forward = types.MethodType(_custom_linear_forward, m)
 
 def align_tensors_by_length(
         tensor_list: List[torch.Tensor],
