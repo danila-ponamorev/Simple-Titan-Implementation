@@ -315,11 +315,15 @@ Validation end!
 
 
 class ValidationCallback(Callback):
-    def __init__(self, val_interval):
+    def __init__(self, val_interval, validate_first=False):
         super().__init__()
         self.val_interval = val_interval
+        self.validate_first = validate_first
 
     def on_train_start(self, trainer, **kwargs):
+        if not self.validate_first:
+            return
+
         for callback in trainer.callbacks:
             if type(callback) is LogPrinter:
                 callback.last_time = time.time()

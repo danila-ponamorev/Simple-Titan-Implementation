@@ -1,7 +1,9 @@
 from typing import List, Union, Dict
+import types
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 def normalize_grad(grad, max_norm: float = 1.0):
     """
@@ -121,6 +123,48 @@ def align_tensors_by_length(
         aligned_tensors.append(aligned_tensor)
 
     return aligned_tensors
+
+def silu_weight_transpose_forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Альтернативная версия метода forward для nn.Linear, которая выглядит так: W @ silu(W^T @ silu(W @ x)).
+    Args:
+        x(torch.Tensor): Входной тензор.
+    """
+    x = F.linear(x, self.weight)
+    x = F.silu(x)
+    x = F.linear(x, torch.transpose(self.weight, -1, -2))
+    x = F.silu(x)
+    return F.linear(x, self.weight, self.bias)
+
+def norm_weight_transpose_forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Альтернативная версия метода forward для nn.Linear, которая выглядит так: W @ silu(W^T @ silu(W @ x)).
+    Args:
+        x(torch.Tensor): Входной тензор.
+    """
+    input = x
+    x = F.linear(x, self.weight)
+    x = F.rms_norm(x, x.shape)
+    x = F.linear(x, torch.transpose(self.weight, -1, -2))
+    x = F.rms_norm(x + input, x.shape)
+    return F.linear(x, self.weight, self.bias)
+
+def create_linear_forward_patcher(method):
+    """
+    Возвращает функцию, которая изменяет метод forward для nn.Linear
+    Args:
+        method (function): Функция-реализация forward для nn.Linear
+    """
+    def patch(m):
+        """
+        Изменяет метод forward для переданного представителя класса nn.Linear на переданный.
+        Args:
+            m: Модуль.
+        """
+        if isinstance(m, nn.Linear):
+            m.forward = types.MethodType(method, m)
+
+    return patch
 
 def read_files(files: List[str], encoding='utf-8'):
     """

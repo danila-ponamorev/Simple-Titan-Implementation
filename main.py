@@ -14,7 +14,8 @@ from training.trainer import DecoderOnlyMACTitanBaseTrainer
 from utils.dataset import TextDatasetWithTokenizer
 from training.callbacks import MetricLogger, NanDetector, GPUMemoryLogger, LogPrinter, ModelCheckpoint, \
     ValidationCallback, LRScheduler, EarlyStopping
-from utils.helpers import init_weights, read_files
+from utils.helpers import init_weights, read_files, \
+    create_linear_forward_patcher, silu_weight_transpose_forward, norm_weight_transpose_forward
 from utils.loaders import PaddedDataLoader
 
 
@@ -25,16 +26,16 @@ if tokenizer.pad_token is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 16
-VAL_BATCH_SIZE = 64
+BATCH_SIZE = 4
+VAL_BATCH_SIZE = 32
 EPOCHS = 1
-LEARNING_RATE = 3e-5
+LEARNING_RATE = 1e-4
 
 VOCAB_SIZE = len(tokenizer)
-D_MODEL = 384
-N_HEADS = 6
+D_MODEL = 256
+N_HEADS = 8
 N_LAYERS = 8
-D_FF = 1024
+D_FF = 768
 MEMORY_DEPTH = 6
 MEMORY_LR = 1e-5
 DROPOUT = 0.1
@@ -60,9 +61,9 @@ model = DecoderOnlyMACTitan(
 
 # model.load_state_dict(torch.load('checkpoints/MACTitan_A_384d_nightly_best_val.pt', 'cuda'))
 model.apply(init_weights)
+model.apply(create_linear_forward_patcher(norm_weight_transpose_forward))
 
 print(f"Number of trainable parameters: {sum([p.numel() for p in model.parameters() if p.requires_grad])}")
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 criterion = torch.nn.CrossEntropyLoss(ignore_index=0)
 # scheduler = CosineAnnealingLR(optimizer, 250_000)
@@ -80,7 +81,7 @@ for text_fragment in text:
 
 print(len(filtered_text))
 
-filtered_text = filtered_text[:6000]
+filtered_text = filtered_text[:10000]
 
 random.shuffle(filtered_text)
 
@@ -103,7 +104,7 @@ train_loader = PaddedDataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     pad_token=0,
-    shuffle=True,
+    shuffle=False,
 )
 
 val_loader = PaddedDataLoader(
@@ -122,7 +123,7 @@ callbacks = [
     # NanDetector(),
     GPUMemoryLogger(),
     ModelCheckpoint('checkpoints/MACTitan_A_384d_030925_scratch.pt'),
-    ValidationCallback(val_interval=500),
+    ValidationCallback(val_interval=1000),
     EarlyStopping(patience=8)
 ]
 

@@ -1,6 +1,6 @@
 from .dataset import TextDatasetWithTokenizer, SimpleTextDatasetWithTokenizerFromFile
 from .helpers import normalize_grad, normalize_grad_fast, debug_tensor, init_weights, \
-    align_tensors_by_length, align_sequences, read_files
+    align_tensors_by_length, align_sequences, read_files, silu_weight_transpose_forward, create_linear_forward_patcher
 from .loaders import ParallelLoader, MixedDataLoader, PaddedDataLoader
 from .iterators import PaddedDataLoaderIter
 
@@ -18,4 +18,6 @@ __all__ = [
     'MixedDataLoader',
     'PaddedDataLoader',
     'PaddedDataLoaderIter',
+    'silu_weight_transpose_forward',
+    'create_linear_forward_patcher',
 ]

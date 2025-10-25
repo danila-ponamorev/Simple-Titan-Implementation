@@ -6,6 +6,7 @@ import math
 from .positional_encoding import PositionalEncoding
 from .base_components import DecoderBlock
 from .neural_memory import NeuralMemoryAsContextLayer, NeuralMemoryAsContextLayerWithResidual
+from .neural_memory_exp import FastNeuralMemoryAsContextLayerWithResidualEXP
 class DecoderOnlyMACTitan(nn.Module):
     """
     Простейшая реализвация Titan MemoryAsContext без PersistentMemory.
@@ -30,7 +31,7 @@ class DecoderOnlyMACTitan(nn.Module):
         self.positional_encoding = PositionalEncoding(d_model, dropout, max_len)
         self.decoder_layers = nn.ModuleList([DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
         self.fc_out = nn.Linear(d_model, vocab_size)
-        self.neural_memory = NeuralMemoryAsContextLayerWithResidual(d_model, d_ff, n_heads, memory_depth, memory_lr, dropout=dropout)
+        self.neural_memory = FastNeuralMemoryAsContextLayerWithResidualEXP(d_model, d_ff, n_heads, memory_depth, memory_lr, dropout=dropout)
 
         self.norm_memory = nn.LayerNorm(d_model)
         self.norm_final = nn.LayerNorm(vocab_size)

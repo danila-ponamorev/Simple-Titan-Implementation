@@ -2,7 +2,7 @@ import time
 
 import torch
 from torch import nn
-from .base_components import PositionwiseFeedForward
+from .base_components import PositionwiseFeedForward, RMSNorm
 from .memory_models import MemoryMLP
 import math
 from torch.func import vmap, functional_call, grad
@@ -164,10 +164,11 @@ class FastNeuralMemoryAsContextLayerWithResidualEXP(nn.Module):
 
         self._memory_model = MemoryMLP(d_model, depth)
 
+        self.norm_x = RMSNorm(d_model)
         self.norm_1 = nn.LayerNorm(d_model)
-        self.norm_2 = nn.LayerNorm(d_model)
-        self.x_with_retrieved_norm = nn.LayerNorm(d_model)
-        self.K_norm = nn.LayerNorm(d_model)
+        self.x_with_retrieved_norm = RMSNorm(d_model)
+        self.norm_k = RMSNorm(d_model)
+        self.norm_attn_out = RMSNorm(d_model)
 
         self.alpha = alpha
         self.rho = rho
@@ -203,18 +204,30 @@ class FastNeuralMemoryAsContextLayerWithResidualEXP(nn.Module):
         return mask
 
     def store(self, x: torch.Tensor, memory_state, past_surprise):
+        batch_size = x.shape[0]
         with torch.no_grad():
-            x_norm = self.norm_1(x)
+            x_norm = self.norm_x(x)
             retrieved = self.batch_retrieve(memory_state, x_norm)
             x_with_memory = x + retrieved
             x_with_memory = self.x_with_retrieved_norm(x_with_memory)
             # 1. Projections with dropout
+            Q = self.k(x_with_memory)
             K = self.k(x_with_memory)
             V = self.v(x_with_memory)
-        with torch.no_grad():
-            K_norm = self.K_norm(K)
-            memory_output = self.batch_retrieve(memory_state, K_norm)
-            grads = self.grad_one(memory_state, memory_output, V)
+
+            Q = Q.view(batch_size, -1, self.n_heads, self.d_head).transpose(1, 2)
+            K = K.view(batch_size, -1, self.n_heads, self.d_head).transpose(1, 2)
+            V = V.view(batch_size, -1, self.n_heads, self.d_head).transpose(1, 2)
+
+            attn_weights = torch.softmax(torch.matmul(Q, torch.transpose(K, -1, -2)), dim=-1)
+
+            attn_res = torch.matmul(attn_weights, V)
+            attn_res = attn_res.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+            attn_res = self.fc_out(attn_res)
+            attn_res = self.norm_attn_out(attn_res)
+
+            memory_output = self.batch_retrieve(memory_state, x_norm)
+            grads = self.grad_one(memory_state, memory_output, attn_res)
             grads = normalize_grad_fast(grads, max_norm=1.0)
 
             new_state = {
@@ -241,7 +254,7 @@ class FastNeuralMemoryAsContextLayerWithResidualEXP(nn.Module):
 
         # 0. Retrieve context from memory
         with torch.no_grad():
-            x_norm = self.norm_1(x)
+            x_norm = self.norm_x(x)
             retrieved = self.batch_retrieve(memory_state, x_norm)
             x_with_memory = x + retrieved
             x_with_memory = self.x_with_retrieved_norm(x_with_memory)
@@ -249,12 +262,6 @@ class FastNeuralMemoryAsContextLayerWithResidualEXP(nn.Module):
         Q = self.q(x_with_memory)
         K = self.k(x_with_memory)
         V = self.v(x_with_memory)
-
-        # with torch.no_grad():
-        #     K_norm = self.K_norm(K)
-        #     memory_output = self.batch_retrieve(memory_state, K_norm)
-        #     grads = self.grad_one(memory_state, memory_output, V)
-        #     grads = normalize_grad_fast(grads, max_norm=1.0)
 
         # 2. Split into heads
         Q = Q.view(batch_size, -1, self.n_heads, self.d_head).transpose(1, 2)
@@ -281,22 +288,11 @@ class FastNeuralMemoryAsContextLayerWithResidualEXP(nn.Module):
         attn_res = self.fc_out(attn_res)
         attn_res = self.dropout(attn_res)
 
-        # 7. NeuralMemory update
-        # new_state, surprise = batch_store(memory_state, past_surprise, K.contiguous().view(batch_size, -1, self.d_model), attn_res, self.alpha, self.rho, self.memory_lr)
-        # new_state = {
-        #     n: (1 - self.alpha) * p + self.rho * s - self.memory_lr * g
-        #     for (n, p), s, g in zip(memory_state.items(), past_surprise.values(), grads.values())
-        # }
-        # surprise = {
-        #     str(i): surprise
-        #     for i, surprise in enumerate(grads.values())
-        # }
-
         # 8. DecoderBlock Logic
         # attn_res = self.norm_2(attn_res)
         x_after_attn = x_with_memory + attn_res
 
-        norm_x_after_attn = self.norm_2(x_after_attn)
+        norm_x_after_attn = self.norm_1(x_after_attn)
         ff_output = self.feed_forward(norm_x_after_attn)
         ff_output = self.dropout(ff_output)
         output = x_after_attn + ff_output

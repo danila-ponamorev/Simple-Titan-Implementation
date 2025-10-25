@@ -26,7 +26,7 @@ def generate(model: DecoderOnlyMACTitan, tokens: torch.Tensor, max_len: int = 51
 
     return generated_tokens
 
-#Пример Использования
+#Пример использования
 if __name__ == '__main__':
     from transformers import GPT2Tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained("sberbank-ai/rugpt3small_based_on_gpt2")
@@ -36,8 +36,8 @@ if __name__ == '__main__':
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     VOCAB_SIZE = len(tokenizer)
-    D_MODEL = 384
-    N_HEADS = 6
+    D_MODEL = 256
+    N_HEADS = 8
     N_LAYERS = 8
     D_FF = 1024
     MEMORY_DEPTH = 6
@@ -57,10 +57,10 @@ if __name__ == '__main__':
         max_len=WINDOW_SIZE,
     ).to(DEVICE)
 
-    model.load_state_dict(torch.load('../checkpoints/MACTitan_A_384d_nightly_200_scratch_best_val.pt', map_location=DEVICE))
+    model.load_state_dict(torch.load('../checkpoints/MACTitan_A_384d_030925_scratch_last_val.pt', map_location=DEVICE))
     model.to(DEVICE)
     model.eval()
-    text = """<|prompter|> Hello, can you"""
+    text = """<|prompter|> Hello, """
     tokens = tokenizer.encode(text, return_tensors='pt').to(DEVICE)
     print(tokens)
     generated_text = generate(model, tokens, 128)
